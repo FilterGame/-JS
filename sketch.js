@@ -38,6 +38,9 @@ const BASE_MOVE_SPEED = 0.8;
 const BASE_ATTACK_COOLDOWN = 60; // frames
 const DAMAGE_TEXT_DURATION = 45; // frames
 const UNIT_VISUAL_SIZE = 10; // 單位視覺大小
+const GRID_SIZE = 40; // 戰場網格大小
+const DIALOGUE_DURATION = 120; // 對話框持續時間 (frames)
+const MAX_GENERALS_PER_BATTLE = 3; // 每場戰鬥最多武將數
     const barHeight = 20;
     const barMargin = 10;
     const barY = 10;
@@ -65,6 +68,7 @@ let battleState = {
     battlefieldEffects: [], // 用於技能特效等 { type, x, y, radius, duration, color, ownerUnit? }
     lastGeneralSkillTime: {}, // { generalId: frameCount }
     projectiles: [], // <--- 新增：用於存放箭矢等飛行物
+    dialogues: [], // { text, x, y, timer }
 
 };
 
@@ -521,6 +525,17 @@ function drawBattleScreen() {
     line(midX, 0, midX, BATTLE_AREA_HEIGHT);
     noStroke();
 
+    // 繪製戰場網格
+    stroke(255, 40);
+    strokeWeight(1);
+    for (let gx = GRID_SIZE; gx < width; gx += GRID_SIZE) {
+        line(gx, 0, gx, BATTLE_AREA_HEIGHT);
+    }
+    for (let gy = GRID_SIZE; gy < BATTLE_AREA_HEIGHT; gy += GRID_SIZE) {
+        line(0, gy, width, gy);
+    }
+    noStroke();
+
     // 2. 繪製雙方總兵力條 (更清晰)
     const barHeight = 20;
     const barMargin = 10;
@@ -573,6 +588,8 @@ function drawBattleScreen() {
 
     // 5. 繪製傷害數字
     drawDamageTexts();
+    // 繪製對話氣泡
+    drawDialogues();
 
     // 6. 繪製武將區 (底部)
     drawGeneralsUI();
@@ -765,6 +782,29 @@ function drawDamageTexts() {
         }
     }
     fill(255); // Reset fill
+}
+
+function drawDialogues() {
+    textAlign(CENTER, CENTER);
+    for (let i = battleState.dialogues.length - 1; i >= 0; i--) {
+        let dlg = battleState.dialogues[i];
+        dlg.timer--;
+        if (dlg.timer <= 0) {
+            battleState.dialogues.splice(i, 1);
+            continue;
+        }
+        let padding = 4;
+        let h = 16;
+        let w = textWidth(dlg.text) + padding * 2;
+        fill(255);
+        stroke(0);
+        rect(dlg.x - w / 2, dlg.y - h, w, h, 4);
+        noStroke();
+        fill(0);
+        textSize(12);
+        text(dlg.text, dlg.x, dlg.y - h / 2);
+    }
+    fill(255);
 }
 
 function drawBattleEffects() {
@@ -1061,6 +1101,7 @@ function handleBattleClick() {
                             if (!isActive) { // 只有非持續狀態下才能再次發動
                                 activateGeneralSkill(gen, isPlayerAttacker, skillIndex); // *** 傳入 skillIndex ***
                                 addMessage(`${gen.name} 發動技能 [${skill.name}]!`);
+                                showDialogueForGeneral(gen, isPlayerAttacker, `施展 ${skill.name}`);
                             } else {
                                 addMessage(`技能 [${skill.name}] 效果持續中...`);
                             }
@@ -1198,6 +1239,8 @@ function startBattlePrep() {
      // 確保攻守方都有武將列表，即使是空的
     selectedCity.generals = selectedCity.generals || [];
     targetCity.generals = targetCity.generals || [];
+    const attackerGenerals = selectedCity.generals.slice(0, MAX_GENERALS_PER_BATTLE);
+    const defenderGenerals = targetCity.generals.slice(0, MAX_GENERALS_PER_BATTLE);
 
 
     battleState = {
@@ -1206,7 +1249,7 @@ function startBattlePrep() {
             cityId: selectedCity.id,
             soldiers: attackerSoldiersToDeploy, // 只帶部分兵力
             initialSoldiers: attackerSoldiersToDeploy,
-            generals: [...selectedCity.generals], // 複製武將列表
+            generals: attackerGenerals.map(g => ({...g})), // 取前幾位武將
             color: attackerFaction.color, // 儲存顏色方便使用
             unitComposition: selectedCity.unitComposition || { SPEARMAN: 0.25, SHIELDMAN: 0.25, CAVALRY: 0.25, ARCHER: 0.25 }, // 默認平均分配
             initialUnits: floor(attackerSoldiersToDeploy / SOLDIERS_PER_UNIT), // 初始單位數
@@ -1216,7 +1259,7 @@ function startBattlePrep() {
             cityId: targetCity.id,
             soldiers: targetCity.soldiers, // 守方全軍出擊
             initialSoldiers: targetCity.soldiers,
-            generals: [...targetCity.generals],
+            generals: defenderGenerals.map(g => ({...g})),
             color: defenderFaction ? defenderFaction.color : color(128), // 中立灰色
              unitComposition: targetCity.unitComposition || { SPEARMAN: 0.25, SHIELDMAN: 0.25, CAVALRY: 0.25, ARCHER: 0.25 },
              initialUnits: floor(targetCity.soldiers / SOLDIERS_PER_UNIT), // 初始單位數
@@ -1231,6 +1274,8 @@ function startBattlePrep() {
         damageTexts: [],
         battlefieldEffects: [],
          lastGeneralSkillTime: {}, // 重置技能計時器
+        projectiles: [],
+        dialogues: []
     };
 
     // 扣除出征兵力
@@ -1252,7 +1297,10 @@ function startBattle() {
     battleState.damageTexts = []; // 清空上次戰鬥的傷害數字
      battleState.battlefieldEffects = []; // 清空特效
      battleState.lastGeneralSkillTime = {};
-	battleState.projectiles = []; // <--- 新增：清空箭矢
+        battleState.projectiles = []; // <--- 新增：清空箭矢
+    battleState.dialogues = []; // 清空對話
+
+    assignGeneralTargets();
 
 
     const attackerUnitCount = battleState.attacker.initialUnits;
@@ -1423,6 +1471,7 @@ function updateBattle() {
                               if (random() < 0.4) { // 40% 機率使用第一個可用的技能
                                  activateGeneralSkill(general, isAttacker, skillIndex);
                                  addMessage(`[AI] ${general.name} 發動技能 [${skill.name}]!`);
+                                 showDialogueForGeneral(general, isAttacker, `施展 ${skill.name}`);
                                  break; // 使用了一個技能就跳出內層循環，不再檢查該武將的其他技能
                               }
                          }
@@ -1621,6 +1670,7 @@ function activateGeneralSkill(general, isAttackerSide, skillIndex) { // *** 添�
     // 記錄技能施放時間 (即使是非持續性技能也記錄一下，方便追蹤)
     battleState.lastGeneralSkillTime[skillKey] = frameCount;
     skill.cooldown = skill.maxCooldown; // *** 設置對應技能的冷卻 ***
+    showDialogueForGeneral(general, isAttackerSide, `施展 ${skill.name}`);
 
     switch (skill.type) {
         case 'aoe_damage':
@@ -1909,6 +1959,8 @@ function endBattle() {
         damageTexts: [],
         battlefieldEffects: [],
         lastGeneralSkillTime: {},
+        projectiles: [],
+        dialogues: []
     };
     selectedCity = null;
     targetCity = null;
@@ -2414,8 +2466,19 @@ function resetGame() {
     targetCity = null;
     internalAffairsCards = [];
     battleState = { // 重置為初始空狀態
-        attacker: null, defender: null, attackerUnits: [], defenderUnits: [], battlePhase: 'DEPLOY',
-        battleTimer: 0, battleWinner: null, playerCommand: null, damageTexts: [], battlefieldEffects: [], lastGeneralSkillTime: {}
+        attacker: null,
+        defender: null,
+        attackerUnits: [],
+        defenderUnits: [],
+        battlePhase: 'DEPLOY',
+        battleTimer: 0,
+        battleWinner: null,
+        playerCommand: null,
+        damageTexts: [],
+        battlefieldEffects: [],
+        lastGeneralSkillTime: {},
+        projectiles: [],
+        dialogues: []
     };
     availableGenerals = [];
     animations = []; // 清空通用動畫
@@ -2502,7 +2565,39 @@ function createBattlefieldEffect(type, x, y, radius, duration, color, ownerUnit 
          color: color,
          ownerUnit: ownerUnit, // 用於跟隨單位的特效
          skillName: skillName, // 用於識別和移除特效
-     });
+    });
+}
+
+function showDialogueForGeneral(general, isAttackerSide, text) {
+    const list = isAttackerSide ? battleState.attacker.generals : battleState.defender.generals;
+    const index = list ? list.findIndex(g => g.id === general.id) : -1;
+    if (index === -1) return;
+    const uiY = BATTLE_AREA_HEIGHT - 60;
+    const generalSpacing = 120;
+    const startX = isAttackerSide ? 60 : width - 60;
+    const genX = isAttackerSide ? startX + index * generalSpacing : startX - index * generalSpacing;
+    const genY = uiY;
+    battleState.dialogues.push({ text, x: genX, y: genY - 35, timer: DIALOGUE_DURATION });
+}
+
+function assignGeneralTargets() {
+    if (!battleState.attacker || !battleState.defender) return;
+    const attackers = battleState.attacker.generals || [];
+    const defenders = battleState.defender.generals || [];
+    attackers.forEach(gen => {
+        if (defenders.length > 0) {
+            const target = random(defenders);
+            gen.battleTarget = target.id;
+            showDialogueForGeneral(gen, true, `目標: ${target.name}`);
+        }
+    });
+    defenders.forEach(gen => {
+        if (attackers.length > 0) {
+            const target = random(attackers);
+            gen.battleTarget = target.id;
+            showDialogueForGeneral(gen, false, `盯上 ${target.name}`);
+        }
+    });
 }
 
 // --- 動畫與特效 (通用，非戰鬥單位) ---
@@ -2723,11 +2818,16 @@ class Unit {
         this.currentDamageReflect = 0; // 當前反傷比例
 
          this.deathTimer = 0; // 死亡動畫計時器
+        this.animationOffset = random(TWO_PI);
+        this.animCounter = 0;
+        this.hitTimer = 0;
     }
 
     // --- 主要更新邏輯 ---
     update(enemyUnits, friendlyUnits) {
-         if (this.hp <= 0 && this.state !== 'dying' && this.state !== 'dead') {
+        this.animCounter++;
+        if (this.hitTimer > 0) this.hitTimer--;
+        if (this.hp <= 0 && this.state !== 'dying' && this.state !== 'dead') {
              this.state = 'dying';
              this.deathTimer = 30; // 死亡動畫持續幀數
              this.target = null; // 清除目標
@@ -3001,6 +3101,7 @@ class Unit {
 
         this.hp -= actualDamage;
         this.hp = max(0, this.hp); // 不能為負
+        this.hitTimer = 10;
 
         // 處理反傷效果
         if (this.currentDamageReflect > 0 && sourceType !== 'reflect' && this.target && this.target.hp > 0) {
@@ -3147,10 +3248,16 @@ class Unit {
     // --- 繪製單位 ---
     draw() {
         push(); // 保存繪圖狀態
-        translate(this.x, this.y);
+        let bob = 0;
+        if (this.state === 'moving' || this.state === 'attacking') {
+            bob = sin(frameCount * 0.2 + this.animationOffset) * 2;
+        }
+        translate(this.x, this.y + bob);
+        scale(this.isAttackerSide ? 1 : -1, 1); // 讓防守方朝左
 
-        // --- 繪製單位形狀 ---
-        fill(this.color);
+        // 根據受擊閃紅
+        let bodyColor = this.hitTimer > 0 ? lerpColor(this.color, color(255,0,0), 0.6) : this.color;
+        fill(bodyColor);
         noStroke();
 
          // 死亡動畫：逐漸變灰/透明
@@ -3192,8 +3299,32 @@ class Unit {
                  ellipse(0, 0, this.size * (this.type === 'CAVALRY' ? 1.3 : 1), this.size); // 騎兵寬一點
                 break;
             default:
-                 ellipse(0, 0, this.size, this.size);
+                ellipse(0, 0, this.size, this.size);
         }
+
+        // 簡易人物線條
+        stroke(0);
+        strokeWeight(2);
+        noFill();
+        let h = this.size;
+        let head = this.size * 0.4;
+        let swing = sin(this.animCounter * 0.25);
+        let armA = 0;
+        let legA = 0;
+        if (this.state === 'moving') {
+            armA = PI/6 * swing;
+            legA = PI/6 * swing;
+        } else if (this.state === 'attacking') {
+            armA = -PI/2;
+        }
+        line(0, -h*0.1, 0, h*0.3); // 身體
+        ellipse(0, -h*0.3, head, head); // 頭
+        let armL = h*0.3;
+        line(0, 0, armL*cos(armA), armL*sin(armA));
+        line(0, 0, armL*cos(-armA), armL*sin(-armA));
+        let legL = h*0.4;
+        line(0, h*0.3, legL*sin(legA), h*0.3 + legL*cos(legA));
+        line(0, h*0.3, -legL*sin(legA), h*0.3 + legL*cos(legA));
 
         // --- 繪製 HP 條 ---
         if (this.hp > 0 && this.state !== 'dying') {
